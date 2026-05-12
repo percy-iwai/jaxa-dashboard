@@ -545,6 +545,12 @@ def show() -> None:
             "事業を1件選択するとサンキー図とインデント付きツリーを表示します。"
             "金額は**事業予算に正規化済み**（末端合計 = 事業予算）。"
         )
+        st.info(
+            "ℹ️ **支出先データの年度について**\n\n"
+            "行政事業レビューの payment-groups は「**翌年度シートに前年度の実際の執行**」が記録される構造です。\n"
+            "例: FY2023の実際の支出先 → FY2024作成シートから取得。\n\n"
+            "「FY2025」事業は翌年度（FY2026）シートが未存在のため支出先データなし。"
+        )
 
         # 予算 > 0 の事業のみ選択肢に出す
         df_sel = df[df["budget_total"].fillna(0) > 0].copy()
@@ -581,10 +587,10 @@ def show() -> None:
 
             mc1, mc2, mc3, mc4 = st.columns(4)
             mc1.metric("事業予算", f"{budget/1e8:,.1f}億円")
-            mc2.metric("途絶え合計（正規化前）", f"{root_sum_raw/1e8:,.1f}億円" if root_sum_raw > 0 else "—",
-                       help="Σ self_amount = Σ level-0 amount（≒ 事業の支出総額）")
-            mc3.metric("スケール係数 ※正規化済み", f"{scale:.3f}" if scale else "—",
-                       help="途絶え合計 × このスケール = 事業予算")
+            mc2.metric("支出先合計（翌年度シート）", f"{root_sum_raw/1e8:,.1f}億円" if root_sum_raw > 0 else "—",
+                       help="翌年度シートの payment-groups から取得した当年度実際の支出先合計。Σ level-0 amount。")
+            mc3.metric("正規化係数（予算÷支出先合計）", f"{scale:.3f}" if scale else "—",
+                       help="事業予算 ÷ 支出先合計。1.0 に近いほど支出先データが予算と整合している。")
             mc4.metric("支出先ノード数", f"{n_nodes}（途絶 {n_terminal}）")
 
             # ── サンキー図 ──────────────────────────────────────
