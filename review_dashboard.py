@@ -508,8 +508,8 @@ def show() -> None:
             pay_filt = payees[payees["fiscal_year"].isin(sel_fys)].copy() if sel_fys else payees.copy()
             pay_filt = pay_filt[pay_filt["ministry_name"].isin(sel_min)].copy() if sel_min else pay_filt
 
-            # 末端合計 KPI
-            total_leaf = pay_filt[pay_filt["self_amount"].fillna(0) > 0]["self_amount"].sum()
+            leaf_df = pay_filt[pay_filt["self_amount"].fillna(0) > 0].copy()
+            total_leaf = leaf_df["self_amount"].sum()
             st.metric(
                 "末端合計（≒執行額）",
                 f"{total_leaf/1e8:,.1f}億円",
@@ -517,7 +517,7 @@ def show() -> None:
             )
 
             pay_rank = (
-                pay_filt[pay_filt["self_amount"].fillna(0) > 0]
+                leaf_df
                 .groupby("payee_name", as_index=False)["self_amount"]
                 .sum()
                 .sort_values("self_amount", ascending=False)
@@ -525,46 +525,73 @@ def show() -> None:
             )
             pay_rank["金額_億円"] = pay_rank["self_amount"] / 1e8
             if not pay_rank.empty:
-                fig_rank = px.bar(
-                    pay_rank, x="金額_億円", y="payee_name",
+                fig_rank = go.Figure(go.Bar(
+                    x=pay_rank["金額_億円"],
+                    y=pay_rank["payee_name"],
                     orientation="h",
-                    title="支出先 末端金額 上位20社（フィルター後・正規化前）",
-                    labels={"金額_億円": "末端金額合計（億円）", "payee_name": "支出先"},
-                    template=TEMPLATE,
-                    text=[f"{v:.1f}億" for v in pay_rank["金額_億円"]],
-                )
-                fig_rank.update_traces(textposition="outside", marker_color="#27ae60")
+                    marker_color="#27ae60",
+                    text=pay_rank["金額_億円"].apply(lambda v: f"{v:.1f}億"),
+                    textposition="auto",
+                ))
                 fig_rank.update_layout(
+                    title="支出先 末端金額 上位20社（フィルター後・正規化前）",
+                    xaxis_title="末端金額合計（億円）",
                     yaxis={"categoryorder": "total ascending"},
+                    template=TEMPLATE,
                     showlegend=False,
                     height=max(350, len(pay_rank) * 28),
+                    margin=dict(l=10, r=80, t=40, b=20),
                 )
                 st.plotly_chart(fig_rank, use_container_width=True)
 
-            # Excel ダウンロード
-            dl_df = (
-                pay_filt[pay_filt["self_amount"].fillna(0) > 0][
-                    ["fiscal_year", "ministry_name", "project_name", "payee_name", "self_amount"]
-                ]
-                .copy()
-                .sort_values(["fiscal_year", "self_amount"], ascending=[True, False])
-                .rename(columns={
-                    "fiscal_year": "年度",
-                    "ministry_name": "省庁名",
-                    "project_name": "事業名",
-                    "payee_name": "企業名",
-                    "self_amount": "self_amount（億円）",
-                })
-            )
-            dl_df["self_amount（億円）"] = (dl_df["self_amount（億円）"] / 1e8).round(4)
-            buf = io.BytesIO()
-            dl_df.to_excel(buf, index=False, engine="openpyxl")
-            st.download_button(
-                "📥 Excelダウンロード",
-                data=buf.getvalue(),
-                file_name="review_payees_terminal.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            # ── ドリルダウン ────────────────────────────────────
+            if not pay_rank.empty:
+                sel_company = st.selectbox(
+                    "企業を選択 → 事業別内訳を表示",
+                    ["（選択してください）"] + pay_rank["payee_name"].tolist(),
+                    key="rv_company_drill",
+                )
+                if sel_company != "（選択してください）":
+                    detail = (
+                        leaf_df[leaf_df["payee_name"] == sel_company][
+                            ["fiscal_year", "ministry_name", "project_name", "self_amount"]
+                        ]
+                        .sort_values(["fiscal_year", "self_amount"], ascending=[True, False])
+                        .rename(columns={
+                            "fiscal_year": "年度",
+                            "ministry_name": "省庁名",
+                            "project_name": "事業名",
+                            "self_amount": "末端金額（億円）",
+                        })
+                    )
+                    detail["末端金額（億円）"] = (detail["末端金額（億円）"] / 1e8).round(4)
+                    st.dataframe(detail, use_container_width=True, hide_index=True)
+
+            # ── Excel ダウンロード ──────────────────────────────
+            if not leaf_df.empty:
+                dl_df = (
+                    leaf_df[
+                        ["fiscal_year", "ministry_name", "project_name", "payee_name", "self_amount"]
+                    ]
+                    .copy()
+                    .sort_values(["fiscal_year", "self_amount"], ascending=[True, False])
+                    .rename(columns={
+                        "fiscal_year": "年度",
+                        "ministry_name": "省庁名",
+                        "project_name": "事業名",
+                        "payee_name": "企業名",
+                        "self_amount": "self_amount（億円）",
+                    })
+                )
+                dl_df["self_amount（億円）"] = (dl_df["self_amount（億円）"] / 1e8).round(4)
+                buf = io.BytesIO()
+                dl_df.to_excel(buf, index=False, engine="openpyxl")
+                st.download_button(
+                    "📥 Excelダウンロード",
+                    data=buf.getvalue(),
+                    file_name="review_payees_terminal.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
 
     # ═══════════════════════════════════════════════════════════
     # タブ2: 資金の流れ（1事業選択 + サンコー + ツリー）
