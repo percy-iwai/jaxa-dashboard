@@ -1,9 +1,9 @@
 """
 行政事業レビュー 宇宙関連ダッシュボード
-データソース: data/review_space.db (build_rs_db.py 準拠スキーマ)
+データソース: data/review_space.db (fetch_review_csv.py 準拠スキーマ)
   - projects          事業サマリー（予算・執行額）
   - expenditure_items 歳出目別内訳
-  - payees            支出先ツリー（payment-groups + payment-edges）
+  - payees            支出先ツリー（5-1/5-2 CSV）
 """
 
 import sqlite3
@@ -375,7 +375,7 @@ def show() -> None:
     if not DB_PATH.exists():
         st.info(
             "データ未取得です。以下のコマンドで取得してください:\n\n"
-            "```\npython scripts/fetch_review_data.py\n```"
+            "```\npython scripts/fetch_review_csv.py\n```"
         )
         return
 
@@ -499,18 +499,22 @@ def show() -> None:
 
         # ── 支出先 金額ランキング（末端）────────────────────────
         st.subheader("支出先 金額ランキング（末端）")
-        st.info(
-            "💡 **「末端」とは？**\n\n"
-            "行政事業レビューの支出は省庁→交付先→委託先→再委託先…と複数段階に渡ることがあります。\n"
-            "ここでは各支出先が「自分で使った金額（受取額 − 再委託額）」を集計しています。\n"
-            "たとえばJAXAが1,500億円受け取り、うち1,400億円を民間企業に再委託した場合、\n"
-            "JAXAの末端金額は100億円（JAXA自身が執行した分）として計上されます。\n\n"
-            "**全末端金額の合計 = 事業の支出総額** になります。"
+        st.caption(
+            "末端＝各支出先が自ら使った金額。再委託分は除く。合計≈事業執行額"
         )
 
         if not payees.empty and "self_amount" in payees.columns:
             pay_filt = payees[payees["fiscal_year"].isin(sel_fys)].copy() if sel_fys else payees.copy()
             pay_filt = pay_filt[pay_filt["ministry_name"].isin(sel_min)].copy() if sel_min else pay_filt
+
+            # 末端合計 KPI
+            total_leaf = pay_filt[pay_filt["self_amount"].fillna(0) > 0]["self_amount"].sum()
+            st.metric(
+                "末端合計（≒執行額）",
+                f"{total_leaf/1e8:,.1f}億円",
+                help="self_amount > 0 の全ノードの合計。再委託分を除いた実際の支出総額。",
+            )
+
             pay_rank = (
                 pay_filt[pay_filt["self_amount"].fillna(0) > 0]
                 .groupby("payee_name", as_index=False)["self_amount"]
@@ -544,12 +548,6 @@ def show() -> None:
         st.caption(
             "事業を1件選択するとサンキー図とインデント付きツリーを表示します。"
             "金額は**事業予算に正規化済み**（末端合計 = 事業予算）。"
-        )
-        st.info(
-            "ℹ️ **支出先データの年度について**\n\n"
-            "行政事業レビューの payment-groups は「**翌年度シートに前年度の実際の執行**」が記録される構造です。\n"
-            "例: FY2023の実際の支出先 → FY2024作成シートから取得。\n\n"
-            "「FY2025」事業は翌年度（FY2026）シートが未存在のため支出先データなし。"
         )
 
         # 予算 > 0 の事業のみ選択肢に出す
@@ -587,10 +585,10 @@ def show() -> None:
 
             mc1, mc2, mc3, mc4 = st.columns(4)
             mc1.metric("事業予算", f"{budget/1e8:,.1f}億円")
-            mc2.metric("支出先合計（翌年度シート）", f"{root_sum_raw/1e8:,.1f}億円" if root_sum_raw > 0 else "—",
-                       help="翌年度シートの payment-groups から取得した当年度実際の支出先合計。Σ level-0 amount。")
-            mc3.metric("正規化係数（予算÷支出先合計）", f"{scale:.3f}" if scale else "—",
-                       help="事業予算 ÷ 支出先合計。1.0 に近いほど支出先データが予算と整合している。")
+            mc2.metric("途絶え合計（正規化前）", f"{root_sum_raw/1e8:,.1f}億円" if root_sum_raw > 0 else "—",
+                       help="Σ self_amount = Σ level-0 amount（≒ 事業の支出総額）")
+            mc3.metric("スケール係数 ※正規化済み", f"{scale:.3f}" if scale else "—",
+                       help="途絶え合計 × このスケール = 事業予算")
             mc4.metric("支出先ノード数", f"{n_nodes}（途絶 {n_terminal}）")
 
             # ── サンキー図 ──────────────────────────────────────
