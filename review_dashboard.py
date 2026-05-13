@@ -6,6 +6,7 @@
   - payees            支出先ツリー（5-1/5-2 CSV）
 """
 
+import io
 import sqlite3
 from pathlib import Path
 
@@ -539,6 +540,31 @@ def show() -> None:
                     height=max(350, len(pay_rank) * 28),
                 )
                 st.plotly_chart(fig_rank, use_container_width=True)
+
+            # Excel ダウンロード
+            dl_df = (
+                pay_filt[pay_filt["self_amount"].fillna(0) > 0][
+                    ["fiscal_year", "ministry_name", "project_name", "payee_name", "self_amount"]
+                ]
+                .copy()
+                .sort_values(["fiscal_year", "self_amount"], ascending=[True, False])
+                .rename(columns={
+                    "fiscal_year": "年度",
+                    "ministry_name": "省庁名",
+                    "project_name": "事業名",
+                    "payee_name": "企業名",
+                    "self_amount": "self_amount（億円）",
+                })
+            )
+            dl_df["self_amount（億円）"] = (dl_df["self_amount（億円）"] / 1e8).round(4)
+            buf = io.BytesIO()
+            dl_df.to_excel(buf, index=False, engine="openpyxl")
+            st.download_button(
+                "📥 Excelダウンロード",
+                data=buf.getvalue(),
+                file_name="review_payees_terminal.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
     # ═══════════════════════════════════════════════════════════
     # タブ2: 資金の流れ（1事業選択 + サンコー + ツリー）
