@@ -1,5 +1,5 @@
 """
-宇宙戦略基金ダッシュボード
+宇宙戦略基金ダッシュボード  v2026-05-15
 データソース: data/fund_jaxa.db
   - themes        テーマ一覧（省庁・期別・分野）
   - theme_budgets 予算情報（支援総額・採択予定件数）
@@ -302,18 +302,12 @@ def show():
     display["採択予定件数"] = display["expected_cases"].apply(
         lambda v: f"{int(v)}件" if pd.notna(v) else "—"
     )
-    pr_links = []
-    for _, row in display.iterrows():
-        url = str(row.get("pr_sheet_url", "") or "").strip()
-        if not url or url == "nan":
-            pr_links.append("")
-            continue
-        page = row.get("pr_sheet_page")
-        if page is not None and str(page) != "nan":
-            pr_links.append(f"{url}#page={int(float(page))}")
-        else:
-            pr_links.append(url)
-    display["PRシート"] = pr_links
+    _urls  = display["pr_sheet_url"].fillna("").astype(str).str.strip()
+    _pages = display["pr_sheet_page"].fillna("")
+    display["PRシート"] = [
+        (f"{u}#page={int(float(p))}" if p and str(p) != "nan" else u) if u and u != "nan" else ""
+        for u, p in zip(_urls, _pages)
+    ]
 
     st.dataframe(
         display[["theme_name", "ministry", "period", "category",
