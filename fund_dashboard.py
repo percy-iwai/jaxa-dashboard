@@ -1,5 +1,5 @@
 """
-宇宙戦略基金ダッシュボード  v2026-05-15
+宇宙戦略基金ダッシュボード  v2026-05-15-2
 データソース: data/fund_jaxa.db
   - themes        テーマ一覧（省庁・期別・分野）
   - theme_budgets 予算情報（支援総額・採択予定件数）
@@ -167,11 +167,24 @@ def load_research_tasks() -> pd.DataFrame:
     if not DB_PATH.exists():
         return pd.DataFrame()
     conn = sqlite3.connect(str(DB_PATH))
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(research_tasks)")
+    cols = {row[1] for row in cur.fetchall()}
+    # 開始・終了日カラム: DB更新で start_date/end_date が入る予定。
+    # 現行DBの period_start/period_end にもフォールバックし、どちらも無ければ NULL。
+    start_col = "start_date" if "start_date" in cols else (
+        "period_start" if "period_start" in cols else None)
+    end_col = "end_date" if "end_date" in cols else (
+        "period_end" if "period_end" in cols else None)
+    start_expr = f"r.{start_col}" if start_col else "NULL"
+    end_expr   = f"r.{end_col}" if end_col else "NULL"
     df = pd.read_sql_query(
-        """
+        f"""
         SELECT r.id, r.theme_id, t.theme_name, t.ministry, t.period,
                r.org_name, r.task_name, r.task_overview,
-               r.committee_type, r.subsidy_rate, r.period_start, r.period_end
+               r.committee_type, r.subsidy_rate,
+               {start_expr} AS start_date,
+               {end_expr}   AS end_date
         FROM research_tasks r
         JOIN themes t ON r.theme_id = t.theme_id
         ORDER BY t.ministry, t.period, t.theme_name, r.org_name
@@ -183,42 +196,80 @@ def load_research_tasks() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600)
+def _has_org_sub_theme() -> bool:
+    """organizations テーブルに sub_theme カラムがあるか（按分方式の切替に使用）。"""
+    if not DB_PATH.exists():
+        return False
+    conn = sqlite3.connect(str(DB_PATH))
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(organizations)")
+    cols = {row[1] for row in cur.fetchall()}
+    conn.close()
+    return "sub_theme" in cols
+
+
+@st.cache_data(ttl=600)
 def load_org_summary() -> pd.DataFrame:
     if not DB_PATH.exists():
         return pd.DataFrame()
+    has_sub_theme = _has_org_sub_theme()
     conn = sqlite3.connect(str(DB_PATH))
-    df = pd.read_sql_query(
-        """
-        WITH org_counts AS (
-            SELECT theme_id, COUNT(*) AS org_count FROM organizations GROUP BY theme_id
-        ),
-        theme_budget AS (
-            SELECT theme_id, SUM(total_budget_oku) AS total_budget_oku
-            FROM theme_budgets GROUP BY theme_id
-        )
-        SELECT
-            o.org_name, o.org_type, o.theme_id,
-            t.theme_name, t.ministry, t.period,
-            oc.org_count,
-            tb.total_budget_oku AS theme_total_oku,
-            CASE
-                WHEN oc.org_count > 0 AND tb.total_budget_oku IS NOT NULL
-                THEN tb.total_budget_oku * 1.0 / oc.org_count
-                ELSE NULL
-            END AS estimated_budget_oku
+    org_extra = ", o.sub_theme" if has_sub_theme else ""
+    df_o = pd.read_sql_query(
+        f"""
+        SELECT o.id, o.theme_id, o.org_name, o.org_type{org_extra},
+               t.theme_name, t.ministry, t.period
         FROM organizations o
         JOIN themes t ON o.theme_id = t.theme_id
-        JOIN org_counts oc ON o.theme_id = oc.theme_id
-        LEFT JOIN theme_budget tb ON o.theme_id = tb.theme_id
         ORDER BY o.org_name, t.period, t.theme_name
         """,
         conn,
     )
+    df_b = pd.read_sql_query(
+        "SELECT theme_id, sub_theme, total_budget_oku FROM theme_budgets",
+        conn,
+    )
     conn.close()
+
+    if not has_sub_theme:
+        df_o["sub_theme"] = None
+
+    # 按分の分子（支援総額）・分母（採択機関数）をテーマ単位／サブテーマ単位で用意
+    theme_budget = df_b.groupby("theme_id")["total_budget_oku"].sum(min_count=1)
+    theme_count  = df_o.groupby("theme_id")["id"].count()
+    sub_budget = (
+        df_b.dropna(subset=["sub_theme"])
+        .groupby(["theme_id", "sub_theme"])["total_budget_oku"].sum(min_count=1)
+    )
+    sub_count = (
+        df_o.dropna(subset=["sub_theme"])
+        .groupby(["theme_id", "sub_theme"])["id"].count()
+    )
+
+    # 1行ずつ按分: organizations.sub_theme が埋まっていればサブテーマ別按分、
+    # そうでなければ（カラム無し or 値NULL）テーマ全体で按分
+    records = []
+    for row in df_o.itertuples(index=False):
+        tid, sub = row.theme_id, row.sub_theme
+        use_sub = has_sub_theme and pd.notna(sub) and (tid, sub) in sub_budget.index
+        if use_sub:
+            cnt = int(sub_count.get((tid, sub), 0))
+            bud = sub_budget.get((tid, sub))
+        else:
+            cnt = int(theme_count.get(tid, 0))
+            bud = theme_budget.get(tid)
+        est = (bud / cnt) if (cnt and pd.notna(bud)) else None
+        records.append({
+            "org_count": cnt,
+            "theme_total_oku": bud,
+            "estimated_budget_oku": est,
+        })
+    df = pd.concat([df_o.reset_index(drop=True), pd.DataFrame(records)], axis=1)
+
     # 正規化前の表記違いによる重複を安全ネットとして排除
     df["org_name"] = df["org_name"].map(_normalize_org)
     df = df[df["org_name"].notna()]
-    df = df.drop_duplicates(subset=["org_name", "theme_id"])
+    df = df.drop_duplicates(subset=["org_name", "theme_id", "sub_theme"])
     # org_type の誤記補正
     for name, otype in _ORG_TYPE_ALIASES.items():
         df.loc[df["org_name"] == name, "org_type"] = otype
@@ -231,19 +282,25 @@ def _show_org_detail(org_name: str, scope_summary: pd.DataFrame) -> None:
     if rows.empty:
         st.info("詳細データがありません。")
         return
-    rows["テーマ支援総額"] = rows["theme_total_oku"].apply(fmt_oku)
-    rows["推計採択額"]     = rows["estimated_budget_oku"].apply(fmt_oku)
+    rows["支援総額（按分元）"] = rows["theme_total_oku"].apply(fmt_oku)
+    rows["推計採択額"]        = rows["estimated_budget_oku"].apply(fmt_oku)
     total = rows["estimated_budget_oku"].sum()
     st.markdown(f"**{org_name}** の採択テーマ一覧")
     st.markdown(f"合計推計採択額: **{fmt_oku(total)}**（按分推計）")
+    cols = ["theme_name", "ministry", "period"]
+    rename = {
+        "theme_name": "テーマ名",
+        "ministry":   "省庁",
+        "period":     "期",
+        "org_count":  "按分機関数",
+    }
+    # sub_theme 別按分が効いている場合のみサブテーマ列を表示
+    if "sub_theme" in rows.columns and rows["sub_theme"].notna().any():
+        cols.append("sub_theme")
+        rename["sub_theme"] = "サブテーマ"
+    cols += ["支援総額（按分元）", "org_count", "推計採択額"]
     st.dataframe(
-        rows[["theme_name", "ministry", "period", "テーマ支援総額", "org_count", "推計採択額"]]
-            .rename(columns={
-                "theme_name": "テーマ名",
-                "ministry":   "省庁",
-                "period":     "期",
-                "org_count":  "同テーマ内機関数",
-            }),
+        rows[cols].rename(columns=rename),
         use_container_width=True,
         hide_index=True,
     )
@@ -468,7 +525,7 @@ def show():
     tab_tasks, tab_org_agg, tab_orgs = st.tabs(["研究課題", "機関別集計（推計）", "採択機関一覧"])
 
     with tab_tasks:
-        st.caption("※開始・終了日は現在DBに未収録のため空欄")
+        st.caption("※開始日・終了日はDBに収録された値を表示（未収録の課題は空欄）")
         tasks_in_scope = df_tasks[df_tasks["theme_id"].isin(theme_ids)]
         if tasks_in_scope.empty:
             st.info("研究課題データがありません。")
@@ -477,16 +534,19 @@ def show():
             sel_theme = st.selectbox("テーマで絞り込み", theme_options, key="fund_theme_sel")
             if sel_theme != "全テーマ":
                 tasks_in_scope = tasks_in_scope[tasks_in_scope["theme_name"] == sel_theme]
+            disp_tasks = tasks_in_scope.copy()
+            disp_tasks["start_date"] = disp_tasks["start_date"].fillna("")
+            disp_tasks["end_date"]   = disp_tasks["end_date"].fillna("")
             st.dataframe(
-                tasks_in_scope[[
+                disp_tasks[[
                     "theme_name", "org_name", "task_name",
-                    "period_start", "period_end", "task_overview",
+                    "start_date", "end_date", "task_overview",
                 ]].rename(columns={
                     "theme_name":    "テーマ",
                     "org_name":      "組織名",
                     "task_name":     "課題名",
-                    "period_start":  "開始",
-                    "period_end":    "終了",
+                    "start_date":    "開始日",
+                    "end_date":      "終了日",
                     "task_overview": "概要",
                 }),
                 use_container_width=True,
@@ -495,9 +555,11 @@ def show():
             st.caption(f"{len(tasks_in_scope)}件")
             _buf_tk = io.BytesIO()
             with pd.ExcelWriter(_buf_tk, engine="openpyxl") as _w:
-                tasks_in_scope[["theme_name", "org_name", "task_name", "task_overview"]].rename(
+                disp_tasks[["theme_name", "org_name", "task_name",
+                            "start_date", "end_date", "task_overview"]].rename(
                     columns={"theme_name": "テーマ名", "org_name": "機関名",
-                             "task_name": "課題名", "task_overview": "概要"}
+                             "task_name": "課題名", "start_date": "開始日",
+                             "end_date": "終了日", "task_overview": "概要"}
                 ).to_excel(_w, index=False, sheet_name="研究課題")
             st.download_button(
                 "📥 研究課題一覧をExcelダウンロード", data=_buf_tk.getvalue(),
@@ -511,11 +573,18 @@ def show():
             "「テーマの支援総額 ÷ そのテーマの採択機関数」で按分した推計値です。"
             "実際の採択額とは異なります。",
         )
-        st.caption(
-            "※推計採択額 = 各テーマの支援総額 ÷ 同テーマ内採択機関数 の合計。"
-            "organizationsテーブルにsub_themeカラムがないため、"
-            "サブテーマ（A/B/C）別の按分には非対応。"
-        )
+        if _has_org_sub_theme():
+            st.caption(
+                "※推計採択額 = 各サブテーマの支援総額 ÷ 同サブテーマ内採択機関数 の合計"
+                "（organizations.sub_theme に基づくサブテーマ別按分）。"
+                "サブテーマ未割当の機関はテーマ全体で按分。"
+            )
+        else:
+            st.caption(
+                "※推計採択額 = 各テーマの支援総額 ÷ 同テーマ内採択機関数 の合計。"
+                "organizationsテーブルにsub_themeカラムがないため、"
+                "サブテーマ（A/B/C）別の按分には非対応。"
+            )
         scope_summary = df_org_summary[df_org_summary["theme_id"].isin(theme_ids)].copy()
         if scope_summary.empty:
             st.info("集計データがありません。")
