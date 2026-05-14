@@ -7,6 +7,7 @@
   - research_tasks 研究課題
 """
 
+import io
 import re
 import sqlite3
 import unicodedata
@@ -43,6 +44,13 @@ CATEGORY_COLORS: dict[str, str] = {
 PERIOD_ORDER = ["第一期", "第二期", "第三期"]
 
 # ── 団体名正規化 ───────────────────────────────────────────────────
+# org_type の誤記をダッシュボード側で補正（DB修正が来たら削除可）
+_ORG_TYPE_ALIASES: dict[str, str] = {
+    "株式会社QPS研究所":  "民間企業",
+    "学校法人立命館":    "大学",
+    "三菱重工業株式会社": "民間企業",
+}
+
 _GARBAGE = {"スペース", "株式会社"}
 _ALIASES = {
     "NECスペーステクノロジー":              "NECスペーステクノロジー株式会社",
@@ -103,14 +111,21 @@ def load_themes() -> pd.DataFrame:
     if not DB_PATH.exists():
         return pd.DataFrame()
     conn = sqlite3.connect(str(DB_PATH))
+    # 将来追加予定の任意カラムを確認
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(themes)")
+    existing_cols = {row[1] for row in cur.fetchall()}
+    _opt = ["overview_pdf_url", "overview_pdf_page", "result_pdf_url", "result_pdf_page"]
+    extra = "".join(f",\n            t.{c}" for c in _opt if c in existing_cols)
     df = pd.read_sql_query(
-        """
+        f"""
         SELECT
             t.theme_id, t.theme_name, t.period, t.domain,
             t.ministry, t.adoption_date,
-            t.detail_url, t.pr_sheet_url, t.pr_sheet_page,
+            t.detail_url, t.pr_sheet_url, t.pr_sheet_page{extra},
             SUM(tb.total_budget_oku) AS total_budget_oku,
-            SUM(tb.expected_cases)   AS expected_cases
+            SUM(tb.expected_cases)   AS expected_cases,
+            (SELECT COUNT(*) FROM organizations o WHERE o.theme_id = t.theme_id) AS adopted_count
         FROM themes t
         LEFT JOIN theme_budgets tb ON t.theme_id = tb.theme_id
         GROUP BY t.theme_id
@@ -119,6 +134,10 @@ def load_themes() -> pd.DataFrame:
         conn,
     )
     conn.close()
+    # 任意カラムが DB になければ空列として追加（表示コードが列存在を前提とするため）
+    for c in _opt:
+        if c not in df.columns:
+            df[c] = None
     # domain は DB で既に4分類に正規化済み
     df["category"] = df["domain"]
     return df
@@ -200,6 +219,9 @@ def load_org_summary() -> pd.DataFrame:
     df["org_name"] = df["org_name"].map(_normalize_org)
     df = df[df["org_name"].notna()]
     df = df.drop_duplicates(subset=["org_name", "theme_id"])
+    # org_type の誤記補正
+    for name, otype in _ORG_TYPE_ALIASES.items():
+        df.loc[df["org_name"] == name, "org_type"] = otype
     return df.reset_index(drop=True)
 
 
@@ -242,6 +264,8 @@ def show():
     df_orgs = load_organizations().copy()
     df_orgs["org_name"] = df_orgs["org_name"].map(_normalize_org)
     df_orgs = df_orgs[df_orgs["org_name"].notna()].reset_index(drop=True)
+    for _name, _otype in _ORG_TYPE_ALIASES.items():
+        df_orgs.loc[df_orgs["org_name"] == _name, "org_type"] = _otype
 
     df_org_summary = load_org_summary()
 
@@ -298,20 +322,53 @@ def show():
     # ── テーマ一覧 ────────────────────────────────────────────
     st.subheader(f"テーマ一覧（{len(df_filtered)}件）")
     display = df_filtered.copy()
-    display["支援総額"]     = display["total_budget_oku"].apply(fmt_oku)
-    display["採択予定件数"] = display["expected_cases"].apply(
-        lambda v: f"{int(v)}件" if pd.notna(v) else "—"
-    )
-    _urls  = display["pr_sheet_url"].fillna("").astype(str).str.strip()
-    _pages = display["pr_sheet_page"].fillna("")
-    display["PRシート"] = [
-        (f"{u}#page={int(float(p))}" if p and str(p) != "nan" else u) if u and u != "nan" else ""
-        for u, p in zip(_urls, _pages)
-    ]
+    display["支援総額"] = display["total_budget_oku"].apply(fmt_oku)
+
+    # 採択件数：第一期・第二期は実績（organizations登録数）、第三期は予定
+    adopted_strs = []
+    for _, _r in display.iterrows():
+        if _r.get("period") in ("第一期", "第二期"):
+            cnt = _r.get("adopted_count", 0) or 0
+            adopted_strs.append(f"{int(cnt)}件" if cnt else "—")
+        else:
+            v = _r.get("expected_cases")
+            adopted_strs.append(f"{int(v)}件" if pd.notna(v) and v else "—")
+    display["採択件数"] = adopted_strs
+
+    def _make_pdf_links(url_col, page_col, period_col=None, periods_shown=None):
+        urls  = display[url_col].fillna("").astype(str).str.strip()
+        pages = display[page_col].fillna("").astype(str)
+        result = []
+        for u, p, per in zip(urls, pages, display[period_col] if period_col else [""] * len(display)):
+            if periods_shown and per not in periods_shown:
+                result.append("")
+                continue
+            u = u if u and u != "nan" else ""
+            p = p if p and p != "nan" else ""
+            if not u:
+                result.append("")
+            elif p:
+                result.append(f"{u}#page={int(float(p))}")
+            else:
+                result.append(u)
+        return result
+
+    display["PRシート"] = _make_pdf_links("pr_sheet_url", "pr_sheet_page")
+    display["案件概要"] = _make_pdf_links("overview_pdf_url", "overview_pdf_page")
+    display["採択結果"] = _make_pdf_links("result_pdf_url", "result_pdf_page",
+                                          period_col="period", periods_shown={"第一期", "第二期"})
+
+    show_cols = ["theme_name", "ministry", "period", "category", "支援総額", "採択件数", "PRシート"]
+    col_cfg: dict = {"PRシート": st.column_config.LinkColumn("PRシート", display_text="PDF")}
+    if display["案件概要"].any():
+        show_cols.append("案件概要")
+        col_cfg["案件概要"] = st.column_config.LinkColumn("案件概要PDF", display_text="PDF")
+    if display["採択結果"].any():
+        show_cols.append("採択結果")
+        col_cfg["採択結果"] = st.column_config.LinkColumn("採択結果PDF", display_text="PDF")
 
     st.dataframe(
-        display[["theme_name", "ministry", "period", "category",
-                 "支援総額", "採択予定件数", "PRシート"]].rename(columns={
+        display[show_cols].rename(columns={
             "theme_name": "テーマ名",
             "ministry":   "省庁",
             "period":     "期",
@@ -319,10 +376,22 @@ def show():
         }),
         use_container_width=True,
         hide_index=True,
-        column_config={
-            "PRシート": st.column_config.LinkColumn("PRシート", display_text="PDF"),
-        },
+        column_config=col_cfg,
     )
+    st.caption(
+        "※採択件数：第一期・第二期は採択実績、第三期は採択予定（推計含む）。"
+        "支援規模に幅がある場合、支援上限額・採択件数下限値を表示し raw_text に原文を記録しています。"
+    )
+    _buf_th = io.BytesIO()
+    with pd.ExcelWriter(_buf_th, engine="openpyxl") as _w:
+        display[["theme_name", "ministry", "period", "category",
+                 "total_budget_oku", "採択件数"]].rename(columns={
+            "theme_name": "テーマ名", "ministry": "省庁", "period": "期",
+            "category": "大カテゴリ", "total_budget_oku": "支援総額（億円）",
+        }).to_excel(_w, index=False, sheet_name="テーマ一覧")
+    st.download_button("📥 テーマ一覧をExcelダウンロード", data=_buf_th.getvalue(),
+                       file_name="jaxa_fund_themes.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # ── 支援総額分析 ──────────────────────────────────────────
     st.subheader("支援総額分析")
@@ -422,7 +491,18 @@ def show():
                 use_container_width=True,
                 hide_index=True,
             )
-            st.caption(f"{len(tasks_in_scope)}件")
+            st.caption(f"{len(tasks_in_scope)}件　※開始・終了日は現在DBに未収録のため空欄")
+            _buf_tk = io.BytesIO()
+            with pd.ExcelWriter(_buf_tk, engine="openpyxl") as _w:
+                tasks_in_scope[["theme_name", "org_name", "task_name", "task_overview"]].rename(
+                    columns={"theme_name": "テーマ名", "org_name": "機関名",
+                             "task_name": "課題名", "task_overview": "概要"}
+                ).to_excel(_w, index=False, sheet_name="研究課題")
+            st.download_button(
+                "📥 研究課題一覧をExcelダウンロード", data=_buf_tk.getvalue(),
+                file_name="jaxa_fund_tasks.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
     with tab_org_agg:
         st.info(
@@ -481,7 +561,22 @@ def show():
                 use_container_width=True,
                 hide_index=True,
             )
-            st.caption(f"{len(agg)}機関　※推計採択額 = 各テーマの支援総額 ÷ 同テーマ内採択機関数 の合計")
+            st.caption(
+                f"{len(agg)}機関　"
+                "※推計採択額 = 各テーマの支援総額 ÷ 同テーマ内採択機関数 の合計。"
+                "organizationsテーブルにsub_themeカラムがないため、"
+                "サブテーマ（A/B/C）別の按分には非対応。"
+            )
+            _buf_og = io.BytesIO()
+            with pd.ExcelWriter(_buf_og, engine="openpyxl") as _w:
+                display_agg[["組織名", "機関種別", "テーマ数", "推計採択額_億円"]].rename(
+                    columns={"推計採択額_億円": "推計採択額（億円）"}
+                ).to_excel(_w, index=False, sheet_name="採択機関集計")
+            st.download_button(
+                "📥 採択機関一覧をExcelダウンロード", data=_buf_og.getvalue(),
+                file_name="jaxa_fund_orgs.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
     with tab_orgs:
         orgs_in_scope = df_orgs[df_orgs["theme_id"].isin(theme_ids)]
