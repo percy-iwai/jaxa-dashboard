@@ -567,7 +567,7 @@ def show() -> None:
                         })
                     )
                     detail["末端金額（億円）"] = (detail["末端金額（億円）"] / 1e8).round(4)
-                    detail["契約概要"] = detail["契約概要"].replace("nan", "").fillna("")
+                    detail["契約概要"] = detail["契約概要"].astype(str).replace("nan", "")
                     st.dataframe(detail, use_container_width=True, hide_index=True)
 
             # ── Excel ダウンロード ──────────────────────────────
