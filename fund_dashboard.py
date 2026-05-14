@@ -204,7 +204,8 @@ def load_org_summary() -> pd.DataFrame:
 
 
 def _pr_url(row) -> str:
-    url = (row.get("pr_sheet_url") or "").strip()
+    val = row.get("pr_sheet_url")
+    url = str(val).strip() if pd.notna(val) and val else ""
     if not url:
         return ""
     page = row.get("pr_sheet_page")
