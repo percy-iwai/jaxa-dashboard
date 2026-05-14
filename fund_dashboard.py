@@ -203,14 +203,6 @@ def load_org_summary() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def _pr_url(url_val, page_val) -> str:
-    url = str(url_val).strip() if pd.notna(url_val) and url_val else ""
-    if not url:
-        return ""
-    if pd.notna(page_val) and page_val:
-        return f"{url}#page={int(page_val)}"
-    return url
-
 
 def _show_org_detail(org_name: str, scope_summary: pd.DataFrame) -> None:
     rows = scope_summary[scope_summary["org_name"] == org_name].copy()
@@ -310,10 +302,18 @@ def show():
     display["採択予定件数"] = display["expected_cases"].apply(
         lambda v: f"{int(v)}件" if pd.notna(v) else "—"
     )
-    display["PRシート"] = [
-        _pr_url(u, p)
-        for u, p in zip(display["pr_sheet_url"], display["pr_sheet_page"])
-    ]
+    pr_links = []
+    for _, row in display.iterrows():
+        url = str(row.get("pr_sheet_url", "") or "").strip()
+        if not url or url == "nan":
+            pr_links.append("")
+            continue
+        page = row.get("pr_sheet_page")
+        if page is not None and str(page) != "nan":
+            pr_links.append(f"{url}#page={int(float(page))}")
+        else:
+            pr_links.append(url)
+    display["PRシート"] = pr_links
 
     st.dataframe(
         display[["theme_name", "ministry", "period", "category",
