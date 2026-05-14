@@ -7,7 +7,9 @@
   - research_tasks 研究課題
 """
 
+import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -29,6 +31,52 @@ DEFAULT_COLORS = [
     "#9e2a2b", "#8e44ad", "#0070c0", "#833c00",
 ]
 
+# ── 団体名正規化 ───────────────────────────────────────────────────
+
+_GARBAGE = {"スペース", "株式会社"}
+
+_ALIASES = {
+    # 法人格なし → あり
+    "NECスペーステクノロジー":              "NECスペーステクノロジー株式会社",
+    "NU-Rei":                              "NU-Rei株式会社",
+    "インターステラテクノロジズ":            "インターステラテクノロジズ株式会社",
+    "コンポジットテーラーズ":                "コンポジットテーラーズ株式会社",
+    "シャープエネルギーソリューション":      "シャープエネルギーソリューション株式会社",
+    "三菱プレシジョン":                      "三菱プレシジョン株式会社",
+    "三菱重工業":                            "三菱重工業株式会社",
+    "三菱電機":                              "三菱電機株式会社",
+    "丸八":                                  "丸八株式会社",
+    "日本郵船":                              "日本郵船株式会社",
+    "日本電気":                              "日本電気株式会社",
+    # 余分スペース除去
+    "Space BD 株式会社":                    "Space BD株式会社",
+    "株式会社 Preferred Networks":          "株式会社Preferred Networks",
+    "株式会社 ジーエス・ユアサ テクノロジー": "株式会社ジーエス・ユアサ テクノロジー",
+    # 大学・研究機関の正式名称統一
+    "東京大学 大学院":                       "国立大学法人東京大学",
+    "国立大学法人東海国立大学機構 名古屋大学": "国立大学法人東海国立大学機構名古屋大学",
+    "東海国立大学機構名古屋大学":            "国立大学法人東海国立大学機構名古屋大学",
+    "大学共同利用機関法人自然科学研究機構":  "大学共同利用機関法人自然科学研究機構国立天文台",
+    "国立天文台":                            "大学共同利用機関法人自然科学研究機構国立天文台",
+}
+
+
+def _normalize_org(name) -> str | None:
+    """団体名を正規化する。ゴミエントリは None を返す。"""
+    if not name or not isinstance(name, str):
+        return None
+    # 1. NFKC: fullwidth→halfwidth, CJK互換→標準漢字
+    name = unicodedata.normalize("NFKC", name).strip()
+    # 2. 連続スペースを単一スペースに
+    name = re.sub(r"  +", " ", name)
+    # 3. ゴミフィルタ
+    if name in _GARBAGE:
+        return None
+    # 4. エイリアス適用
+    return _ALIASES.get(name, name)
+
+
+# ── フォーマット ───────────────────────────────────────────────────
 
 def fmt_oku(val) -> str:
     if pd.isna(val) or val is None:
@@ -158,10 +206,6 @@ def load_org_summary() -> pd.DataFrame:
     return df
 
 
-def _ministry_color(ministry: str) -> str:
-    return ORG_COLORS.get(ministry, DEFAULT_COLORS[hash(ministry) % len(DEFAULT_COLORS)])
-
-
 def _pr_url(row) -> str:
     """PRシートURLを #page=N 付きで返す。URLがなければ空文字。"""
     url = (row.get("pr_sheet_url") or "").strip()
@@ -171,6 +215,33 @@ def _pr_url(row) -> str:
     if pd.notna(page) and page:
         return f"{url}#page={int(page)}"
     return url
+
+
+# ── 詳細表示ヘルパー ──────────────────────────────────────────────
+
+def _show_org_detail(org_name: str, scope_summary: pd.DataFrame) -> None:
+    rows = scope_summary[scope_summary["org_name"] == org_name].copy()
+    if rows.empty:
+        st.info("詳細データがありません。")
+        return
+
+    rows["テーマ支援総額"] = rows["theme_total_oku"].apply(fmt_oku)
+    rows["推計採択額"]     = rows["estimated_budget_oku"].apply(fmt_oku)
+    total = rows["estimated_budget_oku"].sum()
+
+    st.markdown(f"**{org_name}** の採択テーマ一覧")
+    st.markdown(f"合計推計採択額: **{fmt_oku(total)}**（按分推計）")
+    st.dataframe(
+        rows[["theme_name", "ministry", "period", "テーマ支援総額", "org_count", "推計採択額"]]
+            .rename(columns={
+                "theme_name": "テーマ名",
+                "ministry":   "省庁",
+                "period":     "期",
+                "org_count":  "同テーマ内機関数",
+            }),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 # ── メイン表示 ────────────────────────────────────────────────────
@@ -183,9 +254,16 @@ def show():
         return
 
     df_themes = load_themes()
-    df_orgs = load_organizations()
-    df_tasks = load_research_tasks()
-    df_org_summary = load_org_summary()
+    df_tasks  = load_research_tasks()
+
+    # 正規化してロード
+    df_orgs = load_organizations().copy()
+    df_orgs["org_name"] = df_orgs["org_name"].map(_normalize_org)
+    df_orgs = df_orgs[df_orgs["org_name"].notna()].reset_index(drop=True)
+
+    df_org_summary = load_org_summary().copy()
+    df_org_summary["org_name"] = df_org_summary["org_name"].map(_normalize_org)
+    df_org_summary = df_org_summary[df_org_summary["org_name"].notna()].reset_index(drop=True)
 
     if df_themes.empty:
         st.warning("テーマデータがありません。")
@@ -245,7 +323,6 @@ def show():
     if rank_df.empty:
         st.info("予算データのあるテーマがフィルタ条件に該当しません。")
     else:
-        rank_df = rank_df.copy()
         fig = px.bar(
             rank_df,
             x="total_budget_oku",
@@ -307,7 +384,7 @@ def show():
             "実際の採択額とは異なります。",
         )
 
-        scope_summary = df_org_summary[df_org_summary["theme_id"].isin(theme_ids)]
+        scope_summary = df_org_summary[df_org_summary["theme_id"].isin(theme_ids)].copy()
 
         if scope_summary.empty:
             st.info("集計データがありません。")
@@ -321,12 +398,10 @@ def show():
                 )
                 .reset_index()
                 .rename(columns={"org_name": "組織名", "org_type": "機関種別"})
+                .sort_values("推計採択額_億円", ascending=False, na_position="last")
             )
-            agg["推計採択額_億円"] = agg["推計採択額_億円"].where(
-                agg["推計採択額_億円"].notna(), other=None
-            )
-            agg = agg.sort_values("推計採択額_億円", ascending=False, na_position="last")
 
+            # ランキング棒グラフ（上位20機関）
             top20 = agg[agg["推計採択額_億円"].notna()].head(20)
             if not top20.empty:
                 fig_org = px.bar(
@@ -346,6 +421,19 @@ def show():
                 )
                 st.plotly_chart(fig_org, use_container_width=True)
 
+            # 機関選択 → テーマ別明細
+            org_list = agg["組織名"].tolist()
+            sel_org = st.selectbox(
+                "企業・機関を選択してテーマ別明細を表示",
+                ["（選択してください）"] + org_list,
+                key="fund_org_detail",
+            )
+            if sel_org != "（選択してください）":
+                _show_org_detail(sel_org, scope_summary)
+
+            st.markdown("---")
+
+            # 全機関テーブル
             display_agg = agg.copy()
             display_agg["推計採択額"] = display_agg["推計採択額_億円"].apply(fmt_oku)
             st.dataframe(
