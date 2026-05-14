@@ -114,17 +114,63 @@ def load_research_tasks() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=600)
+def load_org_summary() -> pd.DataFrame:
+    """機関別集計（テーマ内按分による採択金額推計付き）"""
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    conn = sqlite3.connect(str(DB_PATH))
+    df = pd.read_sql_query(
+        """
+        WITH org_counts AS (
+            SELECT theme_id, COUNT(*) AS org_count
+            FROM organizations
+            GROUP BY theme_id
+        ),
+        theme_budget AS (
+            SELECT theme_id, SUM(total_budget_oku) AS total_budget_oku
+            FROM theme_budgets
+            GROUP BY theme_id
+        )
+        SELECT
+            o.org_name,
+            o.org_type,
+            o.theme_id,
+            t.theme_name,
+            t.ministry,
+            t.period,
+            oc.org_count,
+            tb.total_budget_oku AS theme_total_oku,
+            CASE
+                WHEN oc.org_count > 0 AND tb.total_budget_oku IS NOT NULL
+                THEN tb.total_budget_oku * 1.0 / oc.org_count
+                ELSE NULL
+            END AS estimated_budget_oku
+        FROM organizations o
+        JOIN themes t ON o.theme_id = t.theme_id
+        JOIN org_counts oc ON o.theme_id = oc.theme_id
+        LEFT JOIN theme_budget tb ON o.theme_id = tb.theme_id
+        ORDER BY o.org_name, t.period, t.theme_name
+        """,
+        conn,
+    )
+    conn.close()
+    return df
+
+
 def _ministry_color(ministry: str) -> str:
     return ORG_COLORS.get(ministry, DEFAULT_COLORS[hash(ministry) % len(DEFAULT_COLORS)])
 
 
-def _pr_link(row) -> str:
-    url = row.get("pr_sheet_url") or ""
-    page = row.get("pr_sheet_page")
+def _pr_url(row) -> str:
+    """PRシートURLを #page=N 付きで返す。URLがなければ空文字。"""
+    url = (row.get("pr_sheet_url") or "").strip()
     if not url:
-        return "—"
-    label = f"PDF p.{int(page)}" if pd.notna(page) else "PDF"
-    return f"[{label}]({url})"
+        return ""
+    page = row.get("pr_sheet_page")
+    if pd.notna(page) and page:
+        return f"{url}#page={int(page)}"
+    return url
 
 
 # ── メイン表示 ────────────────────────────────────────────────────
@@ -139,6 +185,7 @@ def show():
     df_themes = load_themes()
     df_orgs = load_organizations()
     df_tasks = load_research_tasks()
+    df_org_summary = load_org_summary()
 
     if df_themes.empty:
         st.warning("テーマデータがありません。")
@@ -160,6 +207,8 @@ def show():
     if sel_periods:
         df_filtered = df_filtered[df_filtered["period"].isin(sel_periods)]
 
+    theme_ids = df_filtered["theme_id"].tolist()
+
     # ── セクション1: テーマ一覧 ──────────────────────────────
     st.subheader(f"テーマ一覧（{len(df_filtered)}件）")
 
@@ -168,7 +217,7 @@ def show():
     display["採択予定件数"] = display["expected_cases"].apply(
         lambda v: f"{int(v)}件" if pd.notna(v) else "—"
     )
-    display["PRシート"] = display.apply(_pr_link, axis=1)
+    display["PRシート"] = display.apply(_pr_url, axis=1)
 
     st.dataframe(
         display[["theme_name", "ministry", "period", "domain",
@@ -181,7 +230,7 @@ def show():
         use_container_width=True,
         hide_index=True,
         column_config={
-            "PRシート": st.column_config.LinkColumn("PRシート", display_text=r"\[(.+)\]"),
+            "PRシート": st.column_config.LinkColumn("PRシート", display_text="PDF"),
         },
     )
 
@@ -197,8 +246,6 @@ def show():
         st.info("予算データのあるテーマがフィルタ条件に該当しません。")
     else:
         rank_df = rank_df.copy()
-        rank_df["color"] = rank_df["ministry"].apply(_ministry_color)
-
         fig = px.bar(
             rank_df,
             x="total_budget_oku",
@@ -221,13 +268,13 @@ def show():
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # ── セクション3: 採択企業・研究課題 ─────────────────────
+    # ── セクション3: 採択機関・研究課題 ─────────────────────
     st.subheader("採択機関・研究課題")
 
-    tab_tasks, tab_orgs = st.tabs(["研究課題", "採択機関"])
+    tab_tasks, tab_org_agg, tab_orgs = st.tabs(["研究課題", "機関別集計（推計）", "採択機関一覧"])
 
+    # ── 研究課題 ──────────────────────────────────────────
     with tab_tasks:
-        theme_ids = df_filtered["theme_id"].tolist()
         tasks_in_scope = df_tasks[df_tasks["theme_id"].isin(theme_ids)]
 
         if tasks_in_scope.empty:
@@ -242,16 +289,73 @@ def show():
                 "theme_name", "org_name", "task_name",
                 "period_start", "period_end", "task_overview",
             ]].rename(columns={
-                "theme_name":   "テーマ",
-                "org_name":     "組織名",
-                "task_name":    "課題名",
-                "period_start": "開始",
-                "period_end":   "終了",
+                "theme_name":    "テーマ",
+                "org_name":      "組織名",
+                "task_name":     "課題名",
+                "period_start":  "開始",
+                "period_end":    "終了",
                 "task_overview": "概要",
             })
             st.dataframe(tasks_disp, use_container_width=True, hide_index=True)
             st.caption(f"{len(tasks_in_scope)}件")
 
+    # ── 機関別集計（推計） ──────────────────────────────────
+    with tab_org_agg:
+        st.info(
+            "⚠️ **推計値について**: 採択金額は非公開のため、"
+            "「テーマの支援総額 ÷ そのテーマの採択機関数」で按分した推計値です。"
+            "実際の採択額とは異なります。",
+        )
+
+        scope_summary = df_org_summary[df_org_summary["theme_id"].isin(theme_ids)]
+
+        if scope_summary.empty:
+            st.info("集計データがありません。")
+        else:
+            agg = (
+                scope_summary.groupby(["org_name", "org_type"], dropna=False)
+                .agg(
+                    テーマ数=("theme_id", "nunique"),
+                    参加件数=("theme_id", "count"),
+                    推計採択額_億円=("estimated_budget_oku", "sum"),
+                )
+                .reset_index()
+                .rename(columns={"org_name": "組織名", "org_type": "機関種別"})
+            )
+            agg["推計採択額_億円"] = agg["推計採択額_億円"].where(
+                agg["推計採択額_億円"].notna(), other=None
+            )
+            agg = agg.sort_values("推計採択額_億円", ascending=False, na_position="last")
+
+            top20 = agg[agg["推計採択額_億円"].notna()].head(20)
+            if not top20.empty:
+                fig_org = px.bar(
+                    top20.sort_values("推計採択額_億円", ascending=True),
+                    x="推計採択額_億円",
+                    y="組織名",
+                    color="機関種別",
+                    orientation="h",
+                    labels={"推計採択額_億円": "推計採択額（億円・按分）"},
+                    template=TEMPLATE,
+                    height=max(300, len(top20) * 26),
+                    title="推計採択額ランキング（上位20機関）※按分推計",
+                )
+                fig_org.update_layout(
+                    yaxis={"categoryorder": "total ascending"},
+                    margin={"l": 0, "r": 20, "t": 40, "b": 40},
+                )
+                st.plotly_chart(fig_org, use_container_width=True)
+
+            display_agg = agg.copy()
+            display_agg["推計採択額"] = display_agg["推計採択額_億円"].apply(fmt_oku)
+            st.dataframe(
+                display_agg[["組織名", "機関種別", "テーマ数", "参加件数", "推計採択額"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(f"{len(agg)}機関　※推計採択額 = 各テーマの支援総額 ÷ 同テーマ内採択機関数 の合計")
+
+    # ── 採択機関一覧 ────────────────────────────────────────
     with tab_orgs:
         orgs_in_scope = df_orgs[df_orgs["theme_id"].isin(theme_ids)]
 
