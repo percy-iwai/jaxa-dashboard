@@ -76,7 +76,7 @@ def load_payees() -> pd.DataFrame:
         """
         SELECT py.id, py.project_id, py.fiscal_year, py.payee_name,
                py.corporate_number, py.amount, py.parent_payee_id,
-               py.level, py.is_leaf, py.self_amount,
+               py.level, py.is_leaf, py.self_amount, py.contract_summary,
                p.name AS project_name, p.ministry_name, p.organization,
                p.budget_total AS project_budget
         FROM payees py
@@ -554,17 +554,20 @@ def show() -> None:
                 if sel_company != "（選択してください）":
                     detail = (
                         leaf_df[leaf_df["payee_name"] == sel_company][
-                            ["fiscal_year", "ministry_name", "project_name", "self_amount"]
+                            ["fiscal_year", "ministry_name", "project_name",
+                             "contract_summary", "self_amount"]
                         ]
                         .sort_values(["fiscal_year", "self_amount"], ascending=[True, False])
                         .rename(columns={
                             "fiscal_year": "年度",
                             "ministry_name": "省庁名",
                             "project_name": "事業名",
+                            "contract_summary": "契約概要",
                             "self_amount": "末端金額（億円）",
                         })
                     )
                     detail["末端金額（億円）"] = (detail["末端金額（億円）"] / 1e8).round(4)
+                    detail["契約概要"] = detail["契約概要"].replace("nan", "").fillna("")
                     st.dataframe(detail, use_container_width=True, hide_index=True)
 
             # ── Excel ダウンロード ──────────────────────────────
