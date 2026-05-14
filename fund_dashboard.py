@@ -468,6 +468,7 @@ def show():
     tab_tasks, tab_org_agg, tab_orgs = st.tabs(["研究課題", "機関別集計（推計）", "採択機関一覧"])
 
     with tab_tasks:
+        st.caption("※開始・終了日は現在DBに未収録のため空欄")
         tasks_in_scope = df_tasks[df_tasks["theme_id"].isin(theme_ids)]
         if tasks_in_scope.empty:
             st.info("研究課題データがありません。")
@@ -491,7 +492,7 @@ def show():
                 use_container_width=True,
                 hide_index=True,
             )
-            st.caption(f"{len(tasks_in_scope)}件　※開始・終了日は現在DBに未収録のため空欄")
+            st.caption(f"{len(tasks_in_scope)}件")
             _buf_tk = io.BytesIO()
             with pd.ExcelWriter(_buf_tk, engine="openpyxl") as _w:
                 tasks_in_scope[["theme_name", "org_name", "task_name", "task_overview"]].rename(
@@ -509,6 +510,11 @@ def show():
             "⚠️ **推計値について**: 採択金額は非公開のため、"
             "「テーマの支援総額 ÷ そのテーマの採択機関数」で按分した推計値です。"
             "実際の採択額とは異なります。",
+        )
+        st.caption(
+            "※推計採択額 = 各テーマの支援総額 ÷ 同テーマ内採択機関数 の合計。"
+            "organizationsテーブルにsub_themeカラムがないため、"
+            "サブテーマ（A/B/C）別の按分には非対応。"
         )
         scope_summary = df_org_summary[df_org_summary["theme_id"].isin(theme_ids)].copy()
         if scope_summary.empty:
@@ -561,12 +567,7 @@ def show():
                 use_container_width=True,
                 hide_index=True,
             )
-            st.caption(
-                f"{len(agg)}機関　"
-                "※推計採択額 = 各テーマの支援総額 ÷ 同テーマ内採択機関数 の合計。"
-                "organizationsテーブルにsub_themeカラムがないため、"
-                "サブテーマ（A/B/C）別の按分には非対応。"
-            )
+            st.caption(f"{len(agg)}機関")
             _buf_og = io.BytesIO()
             with pd.ExcelWriter(_buf_og, engine="openpyxl") as _w:
                 display_agg[["組織名", "機関種別", "テーマ数", "推計採択額_億円"]].rename(
