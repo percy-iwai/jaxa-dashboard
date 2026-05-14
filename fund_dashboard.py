@@ -195,7 +195,11 @@ def load_org_summary() -> pd.DataFrame:
         conn,
     )
     conn.close()
-    return df
+    # 正規化前の表記違いによる重複を安全ネットとして排除
+    df["org_name"] = df["org_name"].map(_normalize_org)
+    df = df[df["org_name"].notna()]
+    df = df.drop_duplicates(subset=["org_name", "theme_id"])
+    return df.reset_index(drop=True)
 
 
 def _pr_url(row) -> str:
@@ -247,9 +251,7 @@ def show():
     df_orgs["org_name"] = df_orgs["org_name"].map(_normalize_org)
     df_orgs = df_orgs[df_orgs["org_name"].notna()].reset_index(drop=True)
 
-    df_org_summary = load_org_summary().copy()
-    df_org_summary["org_name"] = df_org_summary["org_name"].map(_normalize_org)
-    df_org_summary = df_org_summary[df_org_summary["org_name"].notna()].reset_index(drop=True)
+    df_org_summary = load_org_summary()
 
     if df_themes.empty:
         st.warning("テーマデータがありません。")
