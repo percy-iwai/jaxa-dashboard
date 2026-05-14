@@ -203,14 +203,12 @@ def load_org_summary() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def _pr_url(row) -> str:
-    val = row.get("pr_sheet_url")
-    url = str(val).strip() if pd.notna(val) and val else ""
+def _pr_url(url_val, page_val) -> str:
+    url = str(url_val).strip() if pd.notna(url_val) and url_val else ""
     if not url:
         return ""
-    page = row.get("pr_sheet_page")
-    if pd.notna(page) and page:
-        return f"{url}#page={int(page)}"
+    if pd.notna(page_val) and page_val:
+        return f"{url}#page={int(page_val)}"
     return url
 
 
@@ -312,7 +310,10 @@ def show():
     display["採択予定件数"] = display["expected_cases"].apply(
         lambda v: f"{int(v)}件" if pd.notna(v) else "—"
     )
-    display["PRシート"] = display.apply(_pr_url, axis=1)
+    display["PRシート"] = [
+        _pr_url(u, p)
+        for u, p in zip(display["pr_sheet_url"], display["pr_sheet_page"])
+    ]
 
     st.dataframe(
         display[["theme_name", "ministry", "period", "category",
