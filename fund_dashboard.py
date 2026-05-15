@@ -246,15 +246,20 @@ def load_org_summary() -> pd.DataFrame:
         .groupby(["theme_id", "sub_theme"])["id"].count()
     )
 
-    # 1行ずつ按分: organizations.sub_theme が埋まっていればサブテーマ別按分、
-    # そうでなければ（カラム無し or 値NULL）テーマ全体で按分
+    # 1行ずつ按分: organizations.sub_theme が theme_budgets の sub_theme と一致し
+    # かつそのサブテーマ予算が判明している場合のみサブテーマ別按分。
+    # 一致しない・予算NULL・複合値(例 "A,B")・sub_theme未割当はテーマ全体で按分。
     records = []
     for row in df_o.itertuples(index=False):
         tid, sub = row.theme_id, row.sub_theme
-        use_sub = has_sub_theme and pd.notna(sub) and (tid, sub) in sub_budget.index
-        if use_sub:
+        sub_bud = (
+            sub_budget.get((tid, sub))
+            if has_sub_theme and isinstance(sub, str) and sub
+            else None
+        )
+        if sub_bud is not None and pd.notna(sub_bud):
             cnt = int(sub_count.get((tid, sub), 0))
-            bud = sub_budget.get((tid, sub))
+            bud = sub_bud
         else:
             cnt = int(theme_count.get(tid, 0))
             bud = theme_budget.get(tid)
@@ -577,7 +582,8 @@ def show():
             st.caption(
                 "※推計採択額 = 各サブテーマの支援総額 ÷ 同サブテーマ内採択機関数 の合計"
                 "（organizations.sub_theme に基づくサブテーマ別按分）。"
-                "サブテーマ未割当の機関はテーマ全体で按分。"
+                "サブテーマ未割当・サブテーマ予算が非公開・複数サブテーマ参加の機関は"
+                "テーマ全体で按分。"
             )
         else:
             st.caption(
