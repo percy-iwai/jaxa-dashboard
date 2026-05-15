@@ -527,50 +527,7 @@ def show():
 
     # ── 採択機関・研究課題 ────────────────────────────────────
     st.subheader("採択機関・研究課題")
-    tab_tasks, tab_org_agg, tab_orgs = st.tabs(["研究課題", "機関別集計（推計）", "採択機関一覧"])
-
-    with tab_tasks:
-        st.caption("※開始日・終了日はDBに収録された値を表示（未収録の課題は空欄）")
-        tasks_in_scope = df_tasks[df_tasks["theme_id"].isin(theme_ids)]
-        if tasks_in_scope.empty:
-            st.info("研究課題データがありません。")
-        else:
-            theme_options = ["全テーマ"] + df_filtered["theme_name"].tolist()
-            sel_theme = st.selectbox("テーマで絞り込み", theme_options, key="fund_theme_sel")
-            if sel_theme != "全テーマ":
-                tasks_in_scope = tasks_in_scope[tasks_in_scope["theme_name"] == sel_theme]
-            disp_tasks = tasks_in_scope.copy()
-            disp_tasks["start_date"] = disp_tasks["start_date"].fillna("")
-            disp_tasks["end_date"]   = disp_tasks["end_date"].fillna("")
-            st.dataframe(
-                disp_tasks[[
-                    "theme_name", "org_name", "task_name",
-                    "start_date", "end_date", "task_overview",
-                ]].rename(columns={
-                    "theme_name":    "テーマ",
-                    "org_name":      "組織名",
-                    "task_name":     "課題名",
-                    "start_date":    "開始日",
-                    "end_date":      "終了日",
-                    "task_overview": "概要",
-                }),
-                use_container_width=True,
-                hide_index=True,
-            )
-            st.caption(f"{len(tasks_in_scope)}件")
-            _buf_tk = io.BytesIO()
-            with pd.ExcelWriter(_buf_tk, engine="openpyxl") as _w:
-                disp_tasks[["theme_name", "org_name", "task_name",
-                            "start_date", "end_date", "task_overview"]].rename(
-                    columns={"theme_name": "テーマ名", "org_name": "機関名",
-                             "task_name": "課題名", "start_date": "開始日",
-                             "end_date": "終了日", "task_overview": "概要"}
-                ).to_excel(_w, index=False, sheet_name="研究課題")
-            st.download_button(
-                "📥 研究課題一覧をExcelダウンロード", data=_buf_tk.getvalue(),
-                file_name="jaxa_fund_tasks.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+    tab_org_agg, tab_tasks, tab_orgs = st.tabs(["機関別集計（推計）", "研究課題", "採択機関一覧"])
 
     with tab_org_agg:
         st.info(
@@ -651,6 +608,49 @@ def show():
             st.download_button(
                 "📥 採択機関一覧をExcelダウンロード", data=_buf_og.getvalue(),
                 file_name="jaxa_fund_orgs.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+    with tab_tasks:
+        st.caption("※開始日・終了日はDBに収録された値を表示（未収録の課題は空欄）")
+        tasks_in_scope = df_tasks[df_tasks["theme_id"].isin(theme_ids)]
+        if tasks_in_scope.empty:
+            st.info("研究課題データがありません。")
+        else:
+            theme_options = ["全テーマ"] + df_filtered["theme_name"].tolist()
+            sel_theme = st.selectbox("テーマで絞り込み", theme_options, key="fund_theme_sel")
+            if sel_theme != "全テーマ":
+                tasks_in_scope = tasks_in_scope[tasks_in_scope["theme_name"] == sel_theme]
+            disp_tasks = tasks_in_scope.copy()
+            disp_tasks["start_date"] = disp_tasks["start_date"].fillna("")
+            disp_tasks["end_date"]   = disp_tasks["end_date"].fillna("")
+            st.dataframe(
+                disp_tasks[[
+                    "theme_name", "org_name", "task_name",
+                    "start_date", "end_date", "task_overview",
+                ]].rename(columns={
+                    "theme_name":    "テーマ",
+                    "org_name":      "組織名",
+                    "task_name":     "課題名",
+                    "start_date":    "開始日",
+                    "end_date":      "終了日",
+                    "task_overview": "概要",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(f"{len(tasks_in_scope)}件")
+            _buf_tk = io.BytesIO()
+            with pd.ExcelWriter(_buf_tk, engine="openpyxl") as _w:
+                disp_tasks[["theme_name", "org_name", "task_name",
+                            "start_date", "end_date", "task_overview"]].rename(
+                    columns={"theme_name": "テーマ名", "org_name": "機関名",
+                             "task_name": "課題名", "start_date": "開始日",
+                             "end_date": "終了日", "task_overview": "概要"}
+                ).to_excel(_w, index=False, sheet_name="研究課題")
+            st.download_button(
+                "📥 研究課題一覧をExcelダウンロード", data=_buf_tk.getvalue(),
+                file_name="jaxa_fund_tasks.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
