@@ -20,7 +20,7 @@ import fund_dashboard
 
 with st.sidebar:
     st.caption("🗂️ 引っ越しキット")
-    _kit = Path(__file__).parent.parent / "jaxa_dashboard_kit_20260613.zip"
+    _kit = Path(__file__).parent / "jaxa_dashboard_kit_20260613.zip"
     if _kit.exists():
         st.download_button(
             label="📦 宇宙調達 kit をダウンロード",
