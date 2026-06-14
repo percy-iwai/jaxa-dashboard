@@ -12,9 +12,25 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+from pathlib import Path
+
 import jaxa_dashboard
 import review_dashboard
 import fund_dashboard
+
+with st.sidebar:
+    st.caption("🗂️ 引っ越しキット")
+    _kit = Path(__file__).parent.parent / "jaxa_dashboard_kit_20260613.zip"
+    if _kit.exists():
+        st.download_button(
+            label="📦 宇宙調達 kit をダウンロード",
+            data=_kit.read_bytes(),
+            file_name="jaxa_dashboard_kit_20260613.zip",
+            mime="application/zip",
+            help="JAXAダッシュボード・DB・パイプライン一式",
+        )
+    else:
+        st.info("ローカル環境でのみ\nダウンロード可能です", icon="💻")
 
 tab1, tab2, tab3 = st.tabs([
     "🚀 JAXA契約実績",
