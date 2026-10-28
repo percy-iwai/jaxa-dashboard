@@ -32,6 +32,15 @@ with st.sidebar:
         )
     else:
         st.info("ローカル環境でのみ\nダウンロード可能です", icon="💻")
+    _guide = Path(__file__).parent / "review_api_guide.md"
+    if _guide.exists():
+        st.download_button(
+            label="📝 行政事業レビュー取得手順（.md）",
+            data=_guide.read_bytes(),
+            file_name="行政事業レビュー_データ取得とダッシュボード_指示書.md",
+            mime="text/markdown",
+            help="rssystem.go.jp API からの取得方法と HTML ダッシュボードの作り方（AIエージェント向け指示書）",
+        )
 
 tab1, tab2, tab3 = st.tabs([
     "🚀 JAXA契約実績",
