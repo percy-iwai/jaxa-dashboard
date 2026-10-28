@@ -20,12 +20,13 @@ import fund_dashboard
 
 with st.sidebar:
     st.caption("🗂️ 引っ越しキット")
-    _kit = Path(__file__).parent / "jaxa_dashboard_kit_20260613.zip"
-    if _kit.exists():
+    _kits = sorted(Path(__file__).parent.glob("jaxa_dashboard_kit_*.zip"))
+    _kit = _kits[-1] if _kits else None
+    if _kit:
         st.download_button(
             label="📦 宇宙調達 kit をダウンロード",
             data=_kit.read_bytes(),
-            file_name="jaxa_dashboard_kit_20260613.zip",
+            file_name=_kit.name,
             mime="application/zip",
             help="JAXAダッシュボード・DB・パイプライン一式",
         )
