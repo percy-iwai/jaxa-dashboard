@@ -41,6 +41,15 @@ with st.sidebar:
             mime="text/markdown",
             help="rssystem.go.jp API からの取得方法と HTML ダッシュボードの作り方（AIエージェント向け指示書）",
         )
+    _twb = Path(__file__).parent / "jaxa_space_review.twb"
+    if _twb.exists():
+        st.download_button(
+            label="📊 Tableauワークブック（.twb）",
+            data=_twb.read_bytes(),
+            file_name=_twb.name,
+            mime="application/xml",
+            help="宇宙関連行政事業レビューの Tableau ワークブック（jaxa_space_review.csv を同じフォルダに置いて開く）",
+        )
 
 tab1, tab2, tab3 = st.tabs([
     "🚀 JAXA契約実績",
