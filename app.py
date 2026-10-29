@@ -50,6 +50,15 @@ with st.sidebar:
             mime="application/octet-stream",
             help="宇宙関連行政事業レビューの Tableau パッケージドワークブック（データ jaxa_space_review.csv 同梱）",
         )
+    _dash_html = Path(__file__).parent / "jaxa_dashboard.html"
+    if _dash_html.exists():
+        st.download_button(
+            label="🌐 インタラクティブダッシュボード（HTML）",
+            data=_dash_html.read_bytes(),
+            file_name=_dash_html.name,
+            mime="text/html",
+            help="宇宙関連行政事業レビュー196件のダッシュボード（ブラウザで開くだけで動く1ファイルHTML）",
+        )
 
 tab1, tab2, tab3 = st.tabs([
     "🚀 JAXA契約実績",
